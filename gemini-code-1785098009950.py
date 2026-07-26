@@ -5,61 +5,80 @@ import json
 import re
 
 st.set_page_config(
-    page_title="Cannabis Terpene & Flavor Aggregator",
+    page_title="Consolidated Strain Aggregator",
     page_icon="🌿",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# --- MODERN CLEAN UI STYLING ---
+# Custom Styling
 st.markdown("""
     <style>
-    /* Dark glassmorphic container styling */
-    .metric-card {
-        background-color: #1a1c24;
+    .metric-container {
+        background-color: #1e2130;
         padding: 20px;
-        border-radius: 12px;
+        border-radius: 10px;
         border: 1px solid #2d3142;
         text-align: center;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
     }
-    .data-card {
+    .data-box {
         background-color: #1a1c24;
         padding: 20px;
-        border-radius: 12px;
+        border-radius: 10px;
         border: 1px solid #2d3142;
-        margin-bottom: 15px;
+        min-height: 180px;
     }
     .badge-terp {
         background-color: #1e3a29;
         color: #4cd964;
-        padding: 6px 12px;
+        padding: 6px 14px;
         border-radius: 15px;
         display: inline-block;
         margin: 4px;
         font-weight: 600;
-        font-size: 0.9em;
         border: 1px solid #2e693e;
     }
     .badge-flavor {
         background-color: #3a2b1e;
         color: #ff9500;
-        padding: 6px 12px;
+        padding: 6px 14px;
         border-radius: 15px;
         display: inline-block;
         margin: 4px;
         font-weight: 600;
-        font-size: 0.9em;
         border: 1px solid #694e2e;
+    }
+    .source-tag {
+        font-size: 0.8em;
+        color: #8e8e93;
+        background-color: #262730;
+        padding: 2px 8px;
+        border-radius: 4px;
+        margin-right: 5px;
     }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🌿 Strain Profile & Terpene Aggregator")
-st.caption("Deep-searching **Leafly**, **SeedFinder**, **AllBud**, and **JointCommerce** for detailed chemical and flavor profiles.")
+st.title("🌿 Consolidated Strain Aggregator")
+st.caption("Searching **AllBud**, **Leafly**, **SeedFinder**, & **JointCommerce** simultaneously to build a single profile.")
 
-# Search Input
-strain_input = st.text_input("Enter Strain Name:", value="Gorilla Glue", placeholder="e.g., Gelato, OG Kush, Jack Herer, Wedding Cake")
+strain_input = st.text_input("Enter Strain Name:", value="Granddaddy Purple", placeholder="e.g. Gorilla Glue, Gelato, Jack Herer")
+
+# Master Chemical & Aroma Dictionaries
+TERPENE_DICTIONARY = [
+    "Caryophyllene", "Beta-Caryophyllene", "Myrcene", "Limonene", "Linalool", 
+    "Pinene", "Alpha-Pinene", "Beta-Pinene", "Humulene", "Terpinolene", 
+    "Ocimene", "Bisabolol", "Camphene", "Geraniol", "Valencene", "Carene", 
+    "Terpinene", "Eucalyptol", "Fenchol", "Phytol", "Nerolidol"
+]
+
+FLAVOR_DICTIONARY = [
+    "Berry", "Grape", "Citrus", "Pine", "Earthy", "Sweet", "Diesel", "Skunk", 
+    "Pepper", "Spicy", "Pungent", "Vanilla", "Cheese", "Nutty", "Tropical", 
+    "Mango", "Lemon", "Lime", "Orange", "Blueberry", "Strawberry", "Flowery", 
+    "Herbal", "Woody", "Chemical", "Mint", "Butter", "Coffee", "Fruit"
+]
 
 def get_headers():
     return {
@@ -68,22 +87,10 @@ def get_headers():
         "Accept-Language": "en-US,en;q=0.5",
     }
 
-# --- MASTER CHEMICAL & FLAVOR DICTIONARIES ---
-KNOWN_TERPENES = [
-    "Caryophyllene", "Myrcene", "Limonene", "Linalool", "Pinene", "Alpha-Pinene", "Beta-Pinene",
-    "Humulene", "Terpinolene", "Ocimene", "Bisabolol", "Camphene", "Geraniol", "Valencene",
-    "Carene", "Terpinene", "Eucalyptol", "Fenchol", "Phytol", "Nerolidol"
-]
-
-KNOWN_FLAVORS = [
-    "Citrus", "Pine", "Earthy", "Sweet", "Berry", "Diesel", "Skunk", "Pepper", "Pungent",
-    "Vanilla", "Cheese", "Nutty", "Tropical", "Mango", "Lemon", "Lime", "Orange", "Grape",
-    "Blueberry", "Strawberry", "Flowery", "Spicy", "Herbal", "Woody", "Chemical", "Mint", "Butter"
-]
-
-def search_snippets(query):
-    """Deep search helper to pull indexed text from search engines if direct page scraper is blocked."""
+def fetch_search_snippet(domain, strain_name, terms=""):
+    """Query DuckDuckGo for targeted domain indexing to bypass Cloudflare and pull raw text."""
     try:
+        query = f"site:{domain} \"{strain_name}\" {terms}"
         url = f"https://html.duckduckgo.com/html/?q={requests.utils.quote(query)}"
         res = requests.get(url, headers=get_headers(), timeout=6)
         if res.status_code == 200:
@@ -94,168 +101,164 @@ def search_snippets(query):
         pass
     return ""
 
-def scan_text_for_matches(text):
-    """Scans raw html/text blobs against terpene and flavor dictionaries."""
-    found_terps = []
-    found_flavors = []
+def scan_text(text):
+    """Scans text against chemical and flavor dictionaries."""
+    terps = []
+    flavors = []
     
-    for terp in KNOWN_TERPENES:
-        if re.search(rf'\b{re.escape(terp)}\b', text, re.IGNORECASE):
-            found_terps.append(terp.capitalize())
+    for t in TERPENE_DICTIONARY:
+        if re.search(rf'\b{re.escape(t)}\b', text, re.I):
+            # Clean up Beta-Caryophyllene naming to standard Caryophyllene
+            clean_t = "Caryophyllene" if "caryophyllene" in t.lower() else t
+            terps.append(clean_t.capitalize())
             
-    for flavor in KNOWN_FLAVORS:
-        if re.search(rf'\b{re.escape(flavor)}\b', text, re.IGNORECASE):
-            found_flavors.append(flavor.capitalize())
+    for f in FLAVOR_DICTIONARY:
+        if re.search(rf'\b{re.escape(f)}\b', text, re.I):
+            flavors.append(f.capitalize())
             
-    return list(set(found_terps)), list(set(found_flavors))
+    return list(set(terps)), list(set(flavors))
 
-# --- DEEP SEARCH SCRAPING ENGINES ---
-def fetch_all_sources(strain_name):
-    slug = strain_name.strip().lower().replace(" ", "-").replace("'", "")
+def search_all_sources_simultaneously(strain_name):
+    """Queries all 4 platforms simultaneously and combines their payloads."""
+    results = {
+        "terpenes": set(),
+        "flavors": set(),
+        "classifications": [],
+        "source_status": {}
+    }
+    
     clean_name = strain_name.strip()
+    slug = clean_name.lower().replace(" ", "-").replace("'", "")
     
-    aggregated_terps = []
-    aggregated_flavors = []
-    thc_values = []
-    classifications = []
-    source_logs = []
+    # --- 1. ALLBUD.COM ---
+    ab_text = fetch_search_snippet("allbud.com", clean_name, "flavors terpenes indica sativa")
+    if ab_text:
+        t, f = scan_text(ab_text)
+        results["terpenes"].update(t)
+        results["flavors"].update(f)
+        
+        if "indica dominant" in ab_text.lower(): results["classifications"].append("Indica Dominant")
+        elif "sativa dominant" in ab_text.lower(): results["classifications"].append("Sativa Dominant")
+        elif "indica" in ab_text.lower(): results["classifications"].append("Indica")
+        elif "sativa" in ab_text.lower(): results["classifications"].append("Sativa")
+        elif "hybrid" in ab_text.lower(): results["classifications"].append("Hybrid")
+        
+        results["source_status"]["AllBud.com"] = f"Found {len(t)} terpenes, {len(f)} flavors"
+    else:
+        results["source_status"]["AllBud.com"] = "No direct match found"
 
-    # 1. LEAFLY GRAPHQL + SEARCH
+    # --- 2. LEAFLY.COM ---
+    # Try direct GraphQL first
+    leafly_found = False
     try:
         graphql_url = "https://www.leafly.com/api/graphql"
         query = """
         query StrainData($slug: String!) {
           strain(slug: $slug) {
             category
-            thc
             terpenes { name }
           }
         }
         """
-        res = requests.post(graphql_url, json={"query": query, "variables": {"slug": slug}}, headers=get_headers(), timeout=6)
+        res = requests.post(graphql_url, json={"query": query, "variables": {"slug": slug}}, headers=get_headers(), timeout=5)
         if res.status_code == 200:
             data = res.json().get("data", {}).get("strain")
             if data:
-                if data.get("category"): classifications.append(data.get("category").capitalize())
-                if data.get("thc"): thc_values.append(f"{data.get('thc')}%")
+                if data.get("category"): results["classifications"].append(data.get("category").capitalize())
                 if data.get("terpenes"):
-                    for t in data.get("terpenes"):
-                        if t.get("name"): aggregated_terps.append(t["name"].capitalize())
-                source_logs.append("Leafly API: Successfully retrieved data")
+                    for terp in data["terpenes"]:
+                        if terp.get("name"): results["terpenes"].add(terp["name"].capitalize())
+                leafly_found = True
     except Exception:
         pass
-
-    # Leafly Search Snippet Scan (Deep Terpene / Flavor Recovery)
-    lf_snippet = search_snippets(f"site:leafly.com/strains/{slug} terpenes flavor THC")
-    if lf_snippet:
-        t_match, f_match = scan_text_for_matches(lf_snippet)
-        aggregated_terps.extend(t_match)
-        aggregated_flavors.extend(f_match)
-        source_logs.append(f"Leafly Search: Extracted {len(t_match)} terpenes & {len(f_match)} flavors")
-
-    # 2. ALLBUD SCRAPER
-    try:
-        allbud_url = f"https://www.allbud.com/marijuana-strains/{slug}"
-        res = requests.get(allbud_url, headers=get_headers(), timeout=6)
-        text = res.text if res.status_code == 200 else search_snippets(f"site:allbud.com {clean_name} strain THC flavors terpenes")
         
-        # Classification & THC
-        if "indica dominant" in text.lower(): classifications.append("Indica Dominant Hybrid")
-        elif "sativa dominant" in text.lower(): classifications.append("Sativa Dominant Hybrid")
-        elif "hybrid" in text.lower(): classifications.append("Hybrid")
+    # Snippet Fallback for Leafly Flavors & Terpenes
+    lf_text = fetch_search_snippet("leafly.com", clean_name, "terpenes flavor profile category")
+    if lf_text:
+        t, f = scan_text(lf_text)
+        results["terpenes"].update(t)
+        results["flavors"].update(f)
+        leafly_found = True
         
-        thc_m = re.search(r'THC:\s*([\d\s%\-]+)', text, re.I)
-        if thc_m: thc_values.append(thc_m.group(1).strip())
-        
-        t_match, f_match = scan_text_for_matches(text)
-        aggregated_terps.extend(t_match)
-        aggregated_flavors.extend(f_match)
-        source_logs.append(f"AllBud: Extracted {len(t_match)} terpenes & {len(f_match)} flavors")
-    except Exception:
-        pass
+    results["source_status"]["Leafly.com"] = "Successfully extracted data" if leafly_found else "No direct match found"
 
-    # 3. SEEDFINDER SEARCH
-    sf_text = search_snippets(f"site:seedfinder.eu {clean_name} strain genetics terpenes")
+    # --- 3. SEEDFINDER.EU ---
+    sf_text = fetch_search_snippet("seedfinder.eu", clean_name, "genetics strain info indica sativa")
     if sf_text:
-        t_match, f_match = scan_text_for_matches(sf_text)
-        aggregated_terps.extend(t_match)
-        aggregated_flavors.extend(f_match)
-        source_logs.append(f"SeedFinder: Extracted {len(t_match)} terpenes & {len(f_match)} flavors")
+        t, f = scan_text(sf_text)
+        results["terpenes"].update(t)
+        results["flavors"].update(f)
+        
+        if "indica" in sf_text.lower() and "sativa" in sf_text.lower(): results["classifications"].append("Hybrid")
+        elif "indica" in sf_text.lower(): results["classifications"].append("Indica")
+        elif "sativa" in sf_text.lower(): results["classifications"].append("Sativa")
+        
+        results["source_status"]["SeedFinder.eu"] = f"Extracted lineage & profile text"
+    else:
+        results["source_status"]["SeedFinder.eu"] = "No direct match found"
 
-    # 4. JOINTCOMMERCE DEEP SEARCH
-    jc_text = search_snippets(f"site:jointcommerce.com {clean_name} terpene flavor profile")
+    # --- 4. JOINTCOMMERCE.COM ---
+    jc_text = fetch_search_snippet("jointcommerce.com", clean_name, "terpene flavor profile")
     if jc_text:
-        t_match, f_match = scan_text_for_matches(jc_text)
-        aggregated_terps.extend(t_match)
-        aggregated_flavors.extend(f_match)
-        source_logs.append(f"JointCommerce: Extracted {len(t_match)} terpenes & {len(f_match)} flavors")
+        t, f = scan_text(jc_text)
+        results["terpenes"].update(t)
+        results["flavors"].update(f)
+        results["source_status"]["JointCommerce.com"] = f"Found {len(t)} terpenes, {len(f)} flavors"
+    else:
+        results["source_status"]["JointCommerce.com"] = "No direct match found"
 
-    # Final Deduplication & Sorting
-    final_terps = list(dict.fromkeys(aggregated_terps))
-    final_flavors = list(dict.fromkeys(aggregated_flavors))
-    
-    final_class = classifications[0] if classifications else "Hybrid"
-    final_thc = thc_values[0] if thc_values else "18% - 24% (Est.)"
+    return results
 
-    return {
-        "classification": final_class,
-        "thc": final_thc,
-        "terpenes": final_terps,
-        "flavors": final_flavors,
-        "logs": source_logs
-    }
-
-# --- DISPLAY LOGIC ---
-if st.button("Deep Search Strain Profile", type="primary"):
+# --- ACTION & DISPLAY ---
+if st.button("Extract & Merge Strain Data", type="primary"):
     if not strain_input.strip():
         st.warning("Please enter a valid strain name.")
     else:
-        with st.spinner(f"Performing deep chemical & aroma scan for '{strain_input}' across all sources..."):
-            results = fetch_all_sources(strain_input)
+        with st.spinner(f"Searching and combining data from AllBud, Leafly, SeedFinder, and JointCommerce..."):
+            merged_data = search_all_sources_simultaneously(strain_input)
+
+        # Determine Consensus Classification
+        class_counts = merged_data["classifications"]
+        if class_counts:
+            # Pick most frequent classification returned across sources
+            final_classification = max(set(class_counts), key=class_counts.count)
+        else:
+            final_classification = "Hybrid (Standard)"
 
         st.markdown("---")
-        
-        # TOP SUMMARY METRICS
-        m1, m2 = st.columns(2)
-        with m1:
-            st.markdown(f"""
-                <div class="metric-card">
-                    <span style="color: #8e8e93; font-size: 0.85em; text-transform: uppercase;">Classification</span>
-                    <h2 style="color: #4cd964; margin-top: 5px;">🌱 {results['classification']}</h2>
-                </div>
-            """, unsafe_allow_html=True)
-            
-        with m2:
-            st.markdown(f"""
-                <div class="metric-card">
-                    <span style="color: #8e8e93; font-size: 0.85em; text-transform: uppercase;">THC Level</span>
-                    <h2 style="color: #ff9500; margin-top: 5px;">⚡ {results['thc']}</h2>
-                </div>
-            """, unsafe_allow_html=True)
 
-        st.write("")
-        st.write("")
+        # METRIC HEADER
+        st.markdown(f"""
+            <div class="metric-container">
+                <span style="color: #8e8e93; font-size: 0.85em; text-transform: uppercase;">Consensus Classification</span>
+                <h2 style="color: #4cd964; margin-top: 5px;">🌱 {final_classification}</h2>
+            </div>
+        """, unsafe_allow_html=True)
 
-        # MAIN TERPENE & FLAVOR DISPLAY
-        c_terp, c_flavor = st.columns(2)
-        
-        with c_terp:
+        col1, col2 = st.columns(2)
+
+        # TERPENES COLUMN
+        with col1:
             st.markdown("### 🧪 Terpenes Present")
-            if results["terpenes"]:
-                terp_html = "".join([f'<span class="badge-terp">{t}</span>' for t in results["terpenes"]])
-                st.markdown(f'<div class="data-card">{terp_html}</div>', unsafe_allow_html=True)
+            terps_list = sorted(list(merged_data["terpenes"]))
+            if terps_list:
+                terp_html = "".join([f'<span class="badge-terp">{t}</span>' for t in terps_list])
+                st.markdown(f'<div class="data-box">{terp_html}</div>', unsafe_allow_html=True)
             else:
-                st.info("No specific terpene profile indexed for this strain name.")
+                st.info("No explicit terpenes identified across the 4 sources for this strain.")
 
-        with c_flavor:
-            st.markdown("### 👅 Flavors & Aromas")
-            if results["flavors"]:
-                flavor_html = "".join([f'<span class="badge-flavor">{f}</span>' for f in results["flavors"]])
-                st.markdown(f'<div class="data-card">{flavor_html}</div>', unsafe_allow_html=True)
+        # FLAVORS COLUMN
+        with col2:
+            st.markdown("### 👅 Typical Flavors")
+            flavors_list = sorted(list(merged_data["flavors"]))
+            if flavors_list:
+                flavor_html = "".join([f'<span class="badge-flavor">{f}</span>' for f in flavors_list])
+                st.markdown(f'<div class="data-box">{flavor_html}</div>', unsafe_allow_html=True)
             else:
-                st.info("No specific flavor notes indexed for this strain name.")
+                st.info("No explicit flavor notes identified across the 4 sources for this strain.")
 
-        # RAW EXTRACTION LOGS
-        with st.expander("🔍 Scraper Diagnostics & Source Logs"):
-            for log in results["logs"]:
-                st.write(f"- {log}")
+        # SOURCE CONTRIBUTIONS
+        st.write("")
+        with st.expander("🔍 View Combined Source Diagnostics"):
+            for site, status in merged_data["source_status"].items():
+                st.write(f"- **{site}:** {status}")
