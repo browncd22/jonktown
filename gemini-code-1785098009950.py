@@ -1,8 +1,8 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
+import json
 import re
-from duckduckgo_search import DDGS
 
 st.set_page_config(
     page_title="Consolidated Strain Aggregator",
@@ -53,7 +53,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🌿 Consolidated Strain Aggregator")
-st.caption("Aggregating live data from **AllBud**, **Leafly**, **SeedFinder**, & **JointCommerce**.")
+st.caption("Directly querying **AllBud**, **Leafly**, **SeedFinder**, & **JointCommerce** endpoints.")
 
 strain_input = st.text_input("Enter Strain Name:", value="Granddaddy Purple", placeholder="e.g. Gorilla Glue, Gelato, Jack Herer")
 
@@ -71,31 +71,12 @@ FLAVOR_DICTIONARY = [
     "Herbal", "Woody", "Chemical", "Mint", "Butter", "Coffee", "Fruit", "Kush"
 ]
 
-def search_ddg_native(query):
-    """Uses official duckduckgo_search library to bypass html endpoint block."""
-    combined_text = ""
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
-            for r in results:
-                combined_text += f" {r.get('title', '')} {r.get('body', '')}"
-    except Exception:
-        # Fallback to lite ddg API if library throttles
-        try:
-            url = f"https://lite.duckduckgo.com/lite/"
-            res = requests.post(
-                url, 
-                data={"q": query}, 
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, 
-                timeout=5
-            )
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, "html.parser")
-                snippets = [td.get_text(strip=True) for td in soup.select(".result-snippet")]
-                combined_text += " ".join(snippets)
-        except Exception:
-            pass
-    return combined_text
+def get_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 
 def scan_text(text):
     """Scans raw text against chemical and flavor dictionaries."""
@@ -113,7 +94,7 @@ def scan_text(text):
     return found_terps, found_flavors
 
 def search_all_sources(strain_name):
-    """Queries all 4 platforms and combines their payloads."""
+    """Directly queries all 4 platforms via direct site endpoints."""
     results = {
         "terpenes": set(),
         "flavors": set(),
@@ -122,64 +103,119 @@ def search_all_sources(strain_name):
     }
     
     clean_name = strain_name.strip()
-    slug = clean_name.lower().replace(" ", "-").replace("'", "")
-    
-    # --- 1. ALLBUD.COM ---
-    ab_text = search_ddg_native(f"site:allbud.com {clean_name} strain")
-    if ab_text:
-        t, f = scan_text(ab_text)
-        results["terpenes"].update(t)
-        results["flavors"].update(f)
-        
-        if "indica dominant" in ab_text.lower(): results["classifications"].append("Indica Dominant")
-        elif "sativa dominant" in ab_text.lower(): results["classifications"].append("Sativa Dominant")
-        elif "indica" in ab_text.lower(): results["classifications"].append("Indica")
-        elif "sativa" in ab_text.lower(): results["classifications"].append("Sativa")
-        elif "hybrid" in ab_text.lower(): results["classifications"].append("Hybrid")
-        
-        results["source_status"]["AllBud.com"] = f"Extracted data ({len(t)} terps, {len(f)} flavors)"
-    else:
-        results["source_status"]["AllBud.com"] = "No indexed text returned"
+    slug_dash = clean_name.lower().replace(" ", "-").replace("'", "")
+    slug_underscore = clean_name.replace(" ", "_")
 
-    # --- 2. LEAFLY.COM ---
-    lf_text = search_ddg_native(f"site:leafly.com {clean_name} strain terpenes flavors")
-    if lf_text:
-        t, f = scan_text(lf_text)
-        results["terpenes"].update(t)
-        results["flavors"].update(f)
-        
-        if "indica" in lf_text.lower() and "sativa" in lf_text.lower(): results["classifications"].append("Hybrid")
-        elif "indica" in lf_text.lower(): results["classifications"].append("Indica")
-        elif "sativa" in lf_text.lower(): results["classifications"].append("Sativa")
-        
-        results["source_status"]["Leafly.com"] = f"Extracted data ({len(t)} terps, {len(f)} flavors)"
-    else:
-        results["source_status"]["Leafly.com"] = "No indexed text returned"
+    # --- 1. LEAFLY (DIRECT API & HTML NEXT_DATA) ---
+    leafly_success = False
+    try:
+        # A. Try GraphQL API
+        graphql_url = "https://www.leafly.com/api/graphql"
+        query = """
+        query StrainData($slug: String!) {
+          strain(slug: $slug) {
+            category
+            terpenes { name }
+          }
+        }
+        """
+        res = requests.post(graphql_url, json={"query": query, "variables": {"slug": slug_dash}}, headers=get_headers(), timeout=4)
+        if res.status_code == 200:
+            data = res.json().get("data", {}).get("strain")
+            if data:
+                if data.get("category"): results["classifications"].append(data.get("category").capitalize())
+                if data.get("terpenes"):
+                    for terp in data["terpenes"]:
+                        if terp.get("name"): results["terpenes"].add(terp["name"].capitalize())
+                leafly_success = True
+    except Exception:
+        pass
 
-    # --- 3. SEEDFINDER.EU ---
-    sf_text = search_ddg_native(f"site:seedfinder.eu {clean_name} strain info")
-    if sf_text:
-        t, f = scan_text(sf_text)
-        results["terpenes"].update(t)
-        results["flavors"].update(f)
-        
-        if "indica" in sf_text.lower() and "sativa" in sf_text.lower(): results["classifications"].append("Hybrid")
-        elif "indica" in sf_text.lower(): results["classifications"].append("Indica")
-        elif "sativa" in sf_text.lower(): results["classifications"].append("Sativa")
-        
-        results["source_status"]["SeedFinder.eu"] = f"Extracted data ({len(t)} terps, {len(f)} flavors)"
-    else:
-        results["source_status"]["SeedFinder.eu"] = "No indexed text returned"
+    # B. Try Direct Web Scrape fallback for Leafly
+    if not leafly_success:
+        try:
+            lf_url = f"https://www.leafly.com/strains/{slug_dash}"
+            res = requests.get(lf_url, headers=get_headers(), timeout=4)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, "html.parser")
+                # Look for __NEXT_DATA__ json payload
+                next_data = soup.find("script", id="__NEXT_DATA__")
+                if next_data:
+                    payload = next_data.string
+                    t, f = scan_text(payload)
+                    results["terpenes"].update(t)
+                    results["flavors"].update(f)
+                    leafly_success = True
+                else:
+                    t, f = scan_text(res.text)
+                    results["terpenes"].update(t)
+                    results["flavors"].update(f)
+                    leafly_success = True
+        except Exception:
+            pass
 
-    # --- 4. JOINTCOMMERCE.COM ---
-    jc_text = search_ddg_native(f"site:jointcommerce.com {clean_name} strain profile")
-    if jc_text:
-        t, f = scan_text(jc_text)
-        results["terpenes"].update(t)
-        results["flavors"].update(f)
-        results["source_status"]["JointCommerce.com"] = f"Extracted data ({len(t)} terps, {len(f)} flavors)"
-    else:
-        results["source_status"]["JointCommerce.com"] = "No indexed text returned"
+    results["source_status"]["Leafly.com"] = "Direct data extracted" if leafly_success else "Endpoint unindexed for slug"
+
+    # --- 2. ALLBUD.COM (DIRECT SCRAPE) ---
+    allbud_success = False
+    try:
+        ab_url = f"https://www.allbud.com/marijuana-strains/{slug_dash}"
+        res = requests.get(ab_url, headers=get_headers(), timeout=4)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            text = soup.get_text()
+            t, f = scan_text(text)
+            results["terpenes"].update(t)
+            results["flavors"].update(f)
+            
+            if "indica dominant" in text.lower(): results["classifications"].append("Indica Dominant")
+            elif "sativa dominant" in text.lower(): results["classifications"].append("Sativa Dominant")
+            elif "indica" in text.lower(): results["classifications"].append("Indica")
+            elif "sativa" in text.lower(): results["classifications"].append("Sativa")
+            elif "hybrid" in text.lower(): results["classifications"].append("Hybrid")
+            
+            allbud_success = True
+    except Exception:
+        pass
+
+    results["source_status"]["AllBud.com"] = "Direct data extracted" if allbud_success else "Endpoint unindexed for slug"
+
+    # --- 3. SEEDFINDER.EU (DIRECT SCRAPE) ---
+    seedfinder_success = False
+    try:
+        sf_url = f"https://en.seedfinder.eu/strain-info/{slug_underscore}/"
+        res = requests.get(sf_url, headers=get_headers(), timeout=4)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            text = soup.get_text()
+            t, f = scan_text(text)
+            results["terpenes"].update(t)
+            results["flavors"].update(f)
+            
+            if "indica" in text.lower() and "sativa" in text.lower(): results["classifications"].append("Hybrid")
+            elif "indica" in text.lower(): results["classifications"].append("Indica")
+            elif "sativa" in text.lower(): results["classifications"].append("Sativa")
+            
+            seedfinder_success = True
+    except Exception:
+        pass
+
+    results["source_status"]["SeedFinder.eu"] = "Direct data extracted" if seedfinder_success else "Endpoint unindexed for slug"
+
+    # --- 4. JOINTCOMMERCE.COM (DIRECT SEARCH / API FALLBACK) ---
+    jc_success = False
+    try:
+        jc_url = f"https://www.jointcommerce.com/strains/{slug_dash}"
+        res = requests.get(jc_url, headers=get_headers(), timeout=4)
+        if res.status_code == 200:
+            t, f = scan_text(res.text)
+            results["terpenes"].update(t)
+            results["flavors"].update(f)
+            jc_success = True
+    except Exception:
+        pass
+
+    results["source_status"]["JointCommerce.com"] = "Direct data extracted" if jc_success else "Endpoint unindexed for slug"
 
     return results
 
@@ -188,7 +224,7 @@ if st.button("Extract & Merge Strain Data", type="primary"):
     if not strain_input.strip():
         st.warning("Please enter a valid strain name.")
     else:
-        with st.spinner(f"Aggregating profiles for '{strain_input}' across all 4 sources..."):
+        with st.spinner(f"Querying direct site APIs & endpoints for '{strain_input}'..."):
             merged = search_all_sources(strain_input)
 
         # Classification Calculation
@@ -215,7 +251,7 @@ if st.button("Extract & Merge Strain Data", type="primary"):
                 badges = "".join([f'<span class="badge-terp">{t}</span>' for t in terp_list])
                 st.markdown(f'<div class="data-box">{badges}</div>', unsafe_allow_html=True)
             else:
-                st.info("No specific terpene names detected in the indexed results.")
+                st.info("No specific terpene names detected across direct endpoints.")
 
         # FLAVORS DISPLAY
         with col2:
@@ -225,10 +261,10 @@ if st.button("Extract & Merge Strain Data", type="primary"):
                 badges = "".join([f'<span class="badge-flavor">{f}</span>' for f in flavor_list])
                 st.markdown(f'<div class="data-box">{badges}</div>', unsafe_allow_html=True)
             else:
-                st.info("No specific flavor keywords detected in the indexed results.")
+                st.info("No specific flavor keywords detected across direct endpoints.")
 
         # SOURCE DIAGNOSTICS
         st.write("")
-        with st.expander("🔍 View Source Breakdown"):
+        with st.expander("🔍 View Direct Source Diagnostics"):
             for site, status in merged["source_status"].items():
                 st.write(f"- **{site}:** {status}")
